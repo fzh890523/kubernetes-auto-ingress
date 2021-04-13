@@ -1,7 +1,7 @@
 all: build
 
 ENVVAR = GOOS=linux GOARCH=amd64 CGO_ENABLED=0
-TAG = v0.1.0
+TAG = v0.1.1
 
 build: clean
 	$(ENVVAR) go build -o kubernetes-auto-ingress
