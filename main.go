@@ -18,7 +18,7 @@ import (
     //comment if not using gcp
     _ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 
-    log "github.com/Sirupsen/logrus"
+    log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -243,7 +243,7 @@ func createIngressBackend(service core.Service) extensions.IngressBackend {
 func createIngress(service core.Service, backend extensions.IngressBackend) *extensions.Ingress {
 
     ingressname := service.Name
-    servername := ingressname + "." + wildcardRecord
+    servername := ingressname + "." + service.Namespace + "." + wildcardRecord
 
     return &extensions.Ingress {
         ObjectMeta: metav1.ObjectMeta {
