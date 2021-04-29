@@ -2,12 +2,15 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -208,40 +211,108 @@ func createIngressServiceMap(clientset *kubernetes.Clientset, m map[string]exten
 
 //create an ingress for the associated service
 func createIngressForService(clientset *kubernetes.Clientset, service corev1.Service) (*extensions.Ingress, error) {
-	backend := createIngressBackend(service)
+	lbl := service.Labels
+	var (
+		httpPorts, httpsPorts []int
+		https                 bool
+		err                   error
+	)
+	if lbl != nil {
+		if v := lbl["auto-ingress/httpPorts"]; v != "" {
+			httpPorts, err = parsePortsStr(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid httpPorts: %s", v)
+			}
+		}
+		if v := lbl["auto-ingress/httpsPorts"]; v != "" {
+			httpsPorts, err = parsePortsStr(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid httpsPorts: %s", v)
+			}
+		}
+		if v := lbl["auto-ingress/httpsPorts"]; v != "" {
+			if https, err = strconv.ParseBool(v); err != nil {
+				return nil, fmt.Errorf("invalid https: %s", v)
+			}
+		}
+	}
+	backend := createIngressBackend(service, httpPorts, httpsPorts)
 
-	ingress := createIngress(service, backend)
+	ingress := createIngress(service, backend, https)
 
 	newIng, err := clientset.ExtensionsV1beta1().Ingresses(service.Namespace).Create(ingress)
 
 	return newIng, err
 }
 
+func parsePortsStr(s string) ([]int, error) {
+	var ret []int
+	for _, p := range strings.Split(s, ",") {
+		p = strings.Trim(p, " ")
+		if p == "" {
+			continue
+		}
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return ret, err
+		}
+		ret = append(ret, port)
+	}
+	return ret, nil
+}
+
 //create an ingress backend before putting it to the ingress
-func createIngressBackend(service corev1.Service) extensions.IngressBackend {
+func createIngressBackend(service corev1.Service, httpPorts, httpsPorts []int) extensions.IngressBackend {
 	serviceName := service.GetName()
-	if len(service.Spec.Ports) > 0 {
-		var servicePort32 interface{}
-		var servicePort int
+	var ret extensions.IngressBackend
 
-		servicePort32 = service.Spec.Ports[0].Port
-		servicePort32Tmp := servicePort32.(int32)
+	for _, p := range service.Spec.Ports {
+		var match bool
+		if httpPorts != nil || httpsPorts != nil {
+			for _, hp := range httpPorts {
+				if hp == int(p.Port) {
+					match = true
+					break
+				}
+			}
+			if !match {
+				for _, hp := range httpsPorts {
+					if hp == int(p.Port) {
+						match = true
+						break
+					}
+				}
+			}
+		} else {
+			match = true
+		}
 
-		servicePort = int(servicePort32Tmp)
-		return extensions.IngressBackend{
-			ServiceName: serviceName,
-			ServicePort: intstr.FromInt(servicePort),
+		if match {
+			return extensions.IngressBackend{
+				ServiceName: serviceName,
+				ServicePort: intstr.FromInt(int(p.Port)),
+			}
 		}
 	}
 
-	return extensions.IngressBackend{}
+	return ret
 }
 
 //create ingress for associated service
-func createIngress(service corev1.Service, backend extensions.IngressBackend) *extensions.Ingress {
+func createIngress(service corev1.Service, backend extensions.IngressBackend, https bool) *extensions.Ingress {
 
 	ingressname := service.Name
 	servername := ingressname + "." + service.Namespace + "." + wildcardRecord
+
+	var tls []extensions.IngressTLS
+	if https {
+		tls = append(tls, extensions.IngressTLS{
+			Hosts: []string{
+				servername,
+			},
+			SecretName: secret,
+		})
+	}
 
 	return &extensions.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
@@ -249,14 +320,7 @@ func createIngress(service corev1.Service, backend extensions.IngressBackend) *e
 			Namespace: service.Namespace,
 		},
 		Spec: extensions.IngressSpec{
-			TLS: []extensions.IngressTLS{
-				{
-					Hosts: []string{
-						servername,
-					},
-					SecretName: secret,
-				},
-			},
+			TLS: tls,
 			Rules: []extensions.IngressRule{
 				{
 					Host: servername,
